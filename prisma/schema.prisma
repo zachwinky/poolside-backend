@@ -1,0 +1,65 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // OneDrive tokens (encrypted)
+  onedriveAccessToken   String?
+  onedriveRefreshToken  String?
+  onedriveExpiresAt     DateTime?
+
+  // Relations
+  subscription    Subscription?
+  usage           Usage[]
+
+  // Admin
+  isAdmin         Boolean   @default(false)
+}
+
+model Subscription {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id])
+
+  tier                  String    @default("free") // free, pro, unlimited
+  status                String    @default("active") // active, cancelled, past_due
+
+  // Stripe
+  stripeCustomerId      String?   @unique
+  stripeSubscriptionId  String?   @unique
+  stripePriceId         String?
+
+  // Dates
+  currentPeriodStart    DateTime?
+  currentPeriodEnd      DateTime?
+  cancelAtPeriodEnd     Boolean   @default(false)
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+model Usage {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id])
+
+  periodStart   DateTime
+  periodEnd     DateTime
+  requestsUsed  Int       @default(0)
+
+  @@unique([userId, periodStart])
+}
