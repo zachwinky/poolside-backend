@@ -55,7 +55,7 @@ app.get('/health', (req, res) => {
 
 // Root
 app.get('/', (req, res) => {
-  res.json({ name: 'Poolside Code API', status: 'running', version: '1.0.0' });
+  res.json({ name: 'Poolside Code API', status: 'running', version: '1.0.1' });
 });
 
 // ============ AUTH ROUTES ============
