@@ -10,6 +10,15 @@ body {
   color: var(--foreground);
 }
 
+/* Pointer cursor for interactive elements */
+button,
+[role="button"],
+a,
+input[type="submit"],
+input[type="button"] {
+  cursor: pointer;
+}
+
 /* Smooth scrolling */
 html {
   scroll-behavior: smooth;

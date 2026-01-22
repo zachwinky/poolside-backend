@@ -81,5 +81,5 @@ export default function GoogleSignIn({ onSuccess, onError, text = "signin_with" 
     };
   }, [onSuccess, onError, text]);
 
-  return <div ref={buttonRef} className="flex justify-center" />;
+  return <div ref={buttonRef} className="flex justify-center [&_*]:cursor-pointer" />;
 }

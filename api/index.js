@@ -157,6 +157,11 @@ app.post('/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    // Check if user has a password (Google-only users won't)
+    if (!user.passwordHash) {
+      return res.status(401).json({ error: 'Please sign in with Google' });
+    }
+
     const validPassword = await bcrypt.compare(password, user.passwordHash);
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
@@ -318,10 +323,113 @@ app.get('/auth/me', authenticateToken, async (req, res) => {
       createdAt: user.createdAt,
       subscription: user.subscription,
       hasOnedrive: !!user.onedriveAccessToken,
+      hasPassword: !!user.passwordHash,
     });
   } catch (error) {
     console.error('Get me error:', error);
     res.status(500).json({ error: 'Failed to get user', details: error.message });
+  }
+});
+
+// PATCH /auth/me - Update user profile
+app.patch('/auth/me', authenticateToken, async (req, res) => {
+  try {
+    const { name } = req.body;
+    const db = getPrisma();
+
+    const user = await db.user.update({
+      where: { id: req.user.userId },
+      data: { name: name || null },
+      include: { subscription: true },
+    });
+
+    res.json({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      createdAt: user.createdAt,
+      subscription: user.subscription,
+      hasOnedrive: !!user.onedriveAccessToken,
+      hasPassword: !!user.passwordHash,
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile', details: error.message });
+  }
+});
+
+// POST /auth/change-password - Change password
+app.post('/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    }
+
+    const db = getPrisma();
+    const user = await db.user.findUnique({
+      where: { id: req.user.userId },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // If user has a password, verify current password
+    if (user.passwordHash) {
+      if (!currentPassword) {
+        return res.status(400).json({ error: 'Current password is required' });
+      }
+      const validPassword = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!validPassword) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+    }
+
+    const newPasswordHash = await bcrypt.hash(newPassword, 12);
+
+    await db.user.update({
+      where: { id: user.id },
+      data: { passwordHash: newPasswordHash },
+    });
+
+    res.json({ message: 'Password updated successfully' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Failed to change password', details: error.message });
+  }
+});
+
+// POST /stripe/portal - Create Stripe customer portal session
+app.post('/stripe/portal', authenticateToken, async (req, res) => {
+  try {
+    const db = getPrisma();
+    const user = await db.user.findUnique({
+      where: { id: req.user.userId },
+      include: { subscription: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.subscription?.stripeCustomerId) {
+      return res.status(400).json({ error: 'No active subscription found' });
+    }
+
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+    const { returnUrl } = req.body;
+    const session = await stripe.billingPortal.sessions.create({
+      customer: user.subscription.stripeCustomerId,
+      return_url: returnUrl || 'https://poolside.akoolai.com/dashboard/subscription',
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Stripe portal error:', error);
+    res.status(500).json({ error: 'Failed to create portal session', details: error.message });
   }
 });
 

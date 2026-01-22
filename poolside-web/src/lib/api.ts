@@ -7,6 +7,7 @@ export interface User {
   createdAt: string;
   subscription: Subscription | null;
   hasOnedrive: boolean;
+  hasPassword: boolean;
 }
 
 export interface Subscription {
@@ -158,6 +159,41 @@ class ApiClient {
       throw new Error(data.error || 'Failed to get user');
     }
     return data;
+  }
+
+  async updateProfile(name: string | null): Promise<User> {
+    const response = await this.fetch('/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to update profile');
+    }
+    return data;
+  }
+
+  async changePassword(currentPassword: string | null, newPassword: string): Promise<void> {
+    const response = await this.fetch('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to change password');
+    }
+  }
+
+  async getStripePortalUrl(returnUrl?: string): Promise<string> {
+    const response = await this.fetch('/stripe/portal', {
+      method: 'POST',
+      body: JSON.stringify({ returnUrl }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to get portal URL');
+    }
+    return data.url;
   }
 
   logout() {
