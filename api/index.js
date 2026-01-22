@@ -246,6 +246,51 @@ app.get('/auth/me', authenticateToken, async (req, res) => {
   }
 });
 
+// ============ STRIPE WEBHOOK ============
+
+// POST /webhooks/stripe/subscription - Update subscription from Stripe webhook
+app.post('/webhooks/stripe/subscription', async (req, res) => {
+  try {
+    // Verify internal webhook secret
+    const webhookSecret = req.headers['x-webhook-secret'];
+    if (webhookSecret !== process.env.INTERNAL_WEBHOOK_SECRET) {
+      return res.status(401).json({ error: 'Invalid webhook secret' });
+    }
+
+    const { userId, tier, stripeCustomerId, stripeSubscriptionId, status, cancelAtPeriodEnd } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const db = getPrisma();
+
+    // Update or create subscription
+    const subscription = await db.subscription.upsert({
+      where: { userId },
+      update: {
+        ...(tier && { tier }),
+        ...(status && { status }),
+        ...(stripeCustomerId && { stripeCustomerId }),
+        ...(stripeSubscriptionId !== undefined && { stripeSubscriptionId }),
+        ...(cancelAtPeriodEnd !== undefined && { cancelAtPeriodEnd }),
+      },
+      create: {
+        userId,
+        tier: tier || 'free',
+        status: status || 'active',
+        stripeCustomerId,
+        stripeSubscriptionId,
+      },
+    });
+
+    res.json({ success: true, subscription });
+  } catch (error) {
+    console.error('Stripe webhook error:', error);
+    res.status(500).json({ error: 'Failed to update subscription', details: error.message });
+  }
+});
+
 // 404 handler - use middleware instead of wildcard route (Express 5 compatibility)
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found', path: req.path });
