@@ -1,0 +1,156 @@
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://poolside-backend-nine.vercel.app';
+
+export interface User {
+  id: string;
+  email: string;
+  name: string | null;
+  createdAt: string;
+  subscription: Subscription | null;
+  hasOnedrive: boolean;
+}
+
+export interface Subscription {
+  id: string;
+  tier: 'free' | 'pro' | 'unlimited';
+  status: 'active' | 'cancelled' | 'past_due';
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+}
+
+export interface AuthResponse {
+  message: string;
+  user: User;
+  accessToken: string;
+  refreshToken: string;
+}
+
+class ApiClient {
+  private accessToken: string | null = null;
+  private refreshToken: string | null = null;
+
+  constructor() {
+    if (typeof window !== 'undefined') {
+      this.accessToken = localStorage.getItem('accessToken');
+      this.refreshToken = localStorage.getItem('refreshToken');
+    }
+  }
+
+  setTokens(accessToken: string, refreshToken: string) {
+    this.accessToken = accessToken;
+    this.refreshToken = refreshToken;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('accessToken', accessToken);
+      localStorage.setItem('refreshToken', refreshToken);
+    }
+  }
+
+  clearTokens() {
+    this.accessToken = null;
+    this.refreshToken = null;
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('refreshToken');
+    }
+  }
+
+  private async fetch(endpoint: string, options: RequestInit = {}) {
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    };
+
+    if (this.accessToken) {
+      (headers as Record<string, string>)['Authorization'] = `Bearer ${this.accessToken}`;
+    }
+
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      ...options,
+      headers,
+    });
+
+    // Handle 401/403 - try to refresh token
+    if ((response.status === 401 || response.status === 403) && this.refreshToken) {
+      const refreshed = await this.refreshTokens();
+      if (refreshed) {
+        // Retry the request
+        (headers as Record<string, string>)['Authorization'] = `Bearer ${this.accessToken}`;
+        return fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+      }
+    }
+
+    return response;
+  }
+
+  private async refreshTokens(): Promise<boolean> {
+    try {
+      const response = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: this.refreshToken }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        this.setTokens(data.accessToken, data.refreshToken);
+        return true;
+      }
+    } catch (error) {
+      console.error('Token refresh failed:', error);
+    }
+    this.clearTokens();
+    return false;
+  }
+
+  async register(email: string, password: string, name?: string): Promise<AuthResponse> {
+    const response = await fetch(`${API_BASE}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, name }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Registration failed');
+    }
+
+    this.setTokens(data.accessToken, data.refreshToken);
+    return data;
+  }
+
+  async login(email: string, password: string): Promise<AuthResponse> {
+    const response = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Login failed');
+    }
+
+    this.setTokens(data.accessToken, data.refreshToken);
+    return data;
+  }
+
+  async getMe(): Promise<User> {
+    const response = await this.fetch('/auth/me');
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to get user');
+    }
+    return data;
+  }
+
+  logout() {
+    this.clearTokens();
+  }
+
+  isLoggedIn(): boolean {
+    return !!this.accessToken;
+  }
+}
+
+export const api = new ApiClient();
