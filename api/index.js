@@ -2,16 +2,27 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { PrismaClient } = require('@prisma/client');
 
 const app = express();
 
-// Initialize Prisma with Accelerate
-const accelerateUrl = process.env.PRISMA_DATABASE_URL;
-const prisma = new PrismaClient({
-  log: ['error'],
-  ...(accelerateUrl && { accelerateUrl }),
-});
+// Lazy-load Prisma to avoid initialization errors
+let prisma = null;
+function getPrisma() {
+  if (!prisma) {
+    const { PrismaClient } = require('@prisma/client');
+    const accelerateUrl = process.env.PRISMA_DATABASE_URL;
+
+    if (!accelerateUrl) {
+      throw new Error('PRISMA_DATABASE_URL is not configured');
+    }
+
+    prisma = new PrismaClient({
+      log: ['error'],
+      accelerateUrl,
+    });
+  }
+  return prisma;
+}
 
 // CORS
 app.use(cors({ origin: true, credentials: true }));
@@ -50,12 +61,12 @@ function authenticateToken(req, res, next) {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.1' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.2' });
 });
 
 // Root
 app.get('/', (req, res) => {
-  res.json({ name: 'Poolside Code API', status: 'running', version: '1.0.1' });
+  res.json({ name: 'Poolside Code API', status: 'running', version: '1.0.2' });
 });
 
 // ============ AUTH ROUTES ============
@@ -78,7 +89,9 @@ app.post('/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
-    const existingUser = await prisma.user.findUnique({
+    const db = getPrisma();
+
+    const existingUser = await db.user.findUnique({
       where: { email: email.toLowerCase() },
     });
 
@@ -88,7 +101,7 @@ app.post('/auth/register', async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const user = await prisma.user.create({
+    const user = await db.user.create({
       data: {
         email: email.toLowerCase(),
         passwordHash,
@@ -120,7 +133,7 @@ app.post('/auth/register', async (req, res) => {
     });
   } catch (error) {
     console.error('Register error:', error);
-    res.status(500).json({ error: 'Failed to create account' });
+    res.status(500).json({ error: 'Failed to create account', details: error.message });
   }
 });
 
@@ -133,7 +146,9 @@ app.post('/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const user = await prisma.user.findUnique({
+    const db = getPrisma();
+
+    const user = await db.user.findUnique({
       where: { email: email.toLowerCase() },
       include: { subscription: true },
     });
@@ -164,7 +179,7 @@ app.post('/auth/login', async (req, res) => {
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Failed to login' });
+    res.status(500).json({ error: 'Failed to login', details: error.message });
   }
 });
 
@@ -178,8 +193,9 @@ app.post('/auth/refresh', async (req, res) => {
     }
 
     const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
+    const db = getPrisma();
 
-    const user = await prisma.user.findUnique({
+    const user = await db.user.findUnique({
       where: { id: decoded.userId },
       include: { subscription: true },
     });
@@ -205,7 +221,9 @@ app.post('/auth/refresh', async (req, res) => {
 // GET /auth/me
 app.get('/auth/me', authenticateToken, async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
+    const db = getPrisma();
+
+    const user = await db.user.findUnique({
       where: { id: req.user.userId },
       include: { subscription: true },
     });
@@ -224,7 +242,7 @@ app.get('/auth/me', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get me error:', error);
-    res.status(500).json({ error: 'Failed to get user' });
+    res.status(500).json({ error: 'Failed to get user', details: error.message });
   }
 });
 
