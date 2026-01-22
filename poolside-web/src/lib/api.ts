@@ -240,6 +240,78 @@ class ApiClient {
     return data.user;
   }
 
+  // OneDrive endpoints
+  async getOneDriveAuthUrl(redirectUri: string): Promise<string> {
+    const response = await this.fetch('/auth/onedrive/url', {
+      method: 'POST',
+      body: JSON.stringify({ redirectUri }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to get OneDrive auth URL');
+    }
+    return data.url;
+  }
+
+  async connectOneDrive(code: string, redirectUri: string): Promise<void> {
+    const response = await this.fetch('/auth/onedrive/connect', {
+      method: 'POST',
+      body: JSON.stringify({ code, redirectUri }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to connect OneDrive');
+    }
+  }
+
+  async disconnectOneDrive(): Promise<void> {
+    const response = await this.fetch('/auth/onedrive/disconnect', {
+      method: 'POST',
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to disconnect OneDrive');
+    }
+  }
+
+  // Stripe checkout for new subscriptions
+  async createCheckoutSession(priceId: string, returnUrl?: string): Promise<string> {
+    const response = await this.fetch('/stripe/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ priceId, returnUrl }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to create checkout session');
+    }
+    return data.url;
+  }
+
+  // Password reset
+  async forgotPassword(email: string): Promise<void> {
+    const response = await fetch(`${API_BASE}/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to send reset email');
+    }
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    const response = await fetch(`${API_BASE}/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, newPassword }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to reset password');
+    }
+  }
+
   logout() {
     this.clearTokens();
   }

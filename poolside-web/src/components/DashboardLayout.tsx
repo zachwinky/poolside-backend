@@ -36,6 +36,15 @@ const navItems: NavItem[] = [
     ),
   },
   {
+    href: "/dashboard/onedrive",
+    label: "OneDrive",
+    icon: (
+      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12.5 2C8.91 2 6 4.91 6 8.5c0 .34.03.67.08 1H6c-2.21 0-4 1.79-4 4s1.79 4 4 4h13c2.21 0 4-1.79 4-4 0-2.03-1.53-3.71-3.5-3.96-.24-2.16-1.83-3.87-3.93-4.19A6.47 6.47 0 0 0 12.5 2z"/>
+      </svg>
+    ),
+  },
+  {
     href: "/dashboard/settings",
     label: "Settings",
     icon: (

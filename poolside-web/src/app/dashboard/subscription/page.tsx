@@ -1,10 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useUser } from "@/hooks/useUser";
 import { api } from "@/lib/api";
+
+// Stripe price IDs - set these in your Stripe dashboard
+const STRIPE_PRICES = {
+  pro: process.env.NEXT_PUBLIC_STRIPE_PRO_PRICE_ID || "price_pro_monthly",
+  unlimited: process.env.NEXT_PUBLIC_STRIPE_UNLIMITED_PRICE_ID || "price_unlimited_monthly",
+};
 
 const plans = [
   {
@@ -12,9 +19,10 @@ const plans = [
     name: "Free",
     price: "$0",
     period: "forever",
+    priceId: null,
     features: [
-      "5 AI requests per day",
-      "Basic code editing",
+      "10 AI requests per month",
+      "Haiku model only",
       "OneDrive sync",
     ],
   },
@@ -23,10 +31,12 @@ const plans = [
     name: "Pro",
     price: "$6.99",
     period: "per month",
+    priceId: STRIPE_PRICES.pro,
     features: [
-      "500 AI requests per day",
+      "150 AI requests per month",
+      "Haiku + Sonnet models",
+      "Bring your own API key",
       "Priority support",
-      "All Free features",
     ],
   },
   {
@@ -34,19 +44,51 @@ const plans = [
     name: "Unlimited",
     price: "$14.99",
     period: "per month",
+    priceId: STRIPE_PRICES.unlimited,
     features: [
       "Unlimited AI requests",
-      "Priority support",
+      "All models including Opus",
+      "Bring your own API key",
       "Early access to new features",
-      "All Pro features",
     ],
   },
 ];
 
 export default function SubscriptionPage() {
   const { user, loading, refreshUser } = useUser();
+  const searchParams = useSearchParams();
   const [loadingPortal, setLoadingPortal] = useState(false);
+  const [loadingCheckout, setLoadingCheckout] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  // Handle checkout success/cancel callbacks
+  useEffect(() => {
+    if (searchParams.get("success") === "true") {
+      setSuccess("Subscription updated! It may take a moment to reflect.");
+      refreshUser();
+      window.history.replaceState({}, "", "/dashboard/subscription");
+    }
+    if (searchParams.get("cancelled") === "true") {
+      setError("Checkout was cancelled");
+      window.history.replaceState({}, "", "/dashboard/subscription");
+    }
+  }, [searchParams, refreshUser]);
+
+  const handleUpgrade = async (priceId: string | null) => {
+    if (!priceId) return;
+
+    setError("");
+    setLoadingCheckout(priceId);
+
+    try {
+      const checkoutUrl = await api.createCheckoutSession(priceId);
+      window.location.href = checkoutUrl;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start checkout");
+      setLoadingCheckout(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -93,6 +135,12 @@ export default function SubscriptionPage() {
         {error && (
           <div className="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg text-sm mb-6">
             {error}
+          </div>
+        )}
+
+        {success && (
+          <div className="bg-green-500/10 border border-green-500/50 text-green-400 px-4 py-3 rounded-lg text-sm mb-6">
+            {success}
           </div>
         )}
 
@@ -226,11 +274,21 @@ export default function SubscriptionPage() {
                       </li>
                     ))}
                   </ul>
-                  {isCurrentPlan && (
-                    <div className="mt-4 text-center">
-                      <span className="text-cyan-400 text-sm font-medium">Current Plan</span>
-                    </div>
-                  )}
+                  <div className="mt-4">
+                    {isCurrentPlan ? (
+                      <div className="text-center">
+                        <span className="text-cyan-400 text-sm font-medium">Current Plan</span>
+                      </div>
+                    ) : plan.priceId && plans.findIndex(p => p.tier === plan.tier) > plans.findIndex(p => p.tier === currentPlan.tier) ? (
+                      <button
+                        onClick={() => handleUpgrade(plan.priceId)}
+                        disabled={loadingCheckout === plan.priceId}
+                        className="w-full bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white py-2 px-4 rounded-lg text-sm font-medium transition disabled:opacity-50"
+                      >
+                        {loadingCheckout === plan.priceId ? "Loading..." : `Upgrade to ${plan.name}`}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               );
             })}

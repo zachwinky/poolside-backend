@@ -360,6 +360,217 @@ app.patch('/auth/me', authenticateToken, async (req, res) => {
   }
 });
 
+// ============ ONEDRIVE ROUTES ============
+
+// POST /auth/onedrive/url - Get Microsoft OAuth URL
+app.post('/auth/onedrive/url', authenticateToken, async (req, res) => {
+  try {
+    const { redirectUri } = req.body;
+
+    if (!redirectUri) {
+      return res.status(400).json({ error: 'Redirect URI is required' });
+    }
+
+    const clientId = process.env.MICROSOFT_CLIENT_ID;
+    if (!clientId) {
+      return res.status(500).json({ error: 'Microsoft OAuth not configured' });
+    }
+
+    const scopes = [
+      'openid',
+      'profile',
+      'email',
+      'Files.ReadWrite.All',
+      'offline_access',
+    ].join(' ');
+
+    const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+      `client_id=${clientId}` +
+      `&response_type=code` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent(scopes)}` +
+      `&response_mode=query`;
+
+    res.json({ url: authUrl });
+  } catch (error) {
+    console.error('OneDrive auth URL error:', error);
+    res.status(500).json({ error: 'Failed to generate auth URL', details: error.message });
+  }
+});
+
+// POST /auth/onedrive/connect - Exchange code for tokens and store
+app.post('/auth/onedrive/connect', authenticateToken, async (req, res) => {
+  try {
+    const { code, redirectUri } = req.body;
+
+    if (!code || !redirectUri) {
+      return res.status(400).json({ error: 'Code and redirect URI are required' });
+    }
+
+    const clientId = process.env.MICROSOFT_CLIENT_ID;
+    const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({ error: 'Microsoft OAuth not configured' });
+    }
+
+    // Exchange code for tokens
+    const tokenResponse = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    const tokenData = await tokenResponse.json();
+
+    if (!tokenResponse.ok) {
+      console.error('Microsoft token error:', tokenData);
+      return res.status(400).json({ error: 'Failed to exchange code for tokens' });
+    }
+
+    const db = getPrisma();
+
+    // Calculate expiry time
+    const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
+
+    // Store tokens
+    await db.user.update({
+      where: { id: req.user.userId },
+      data: {
+        onedriveAccessToken: tokenData.access_token,
+        onedriveRefreshToken: tokenData.refresh_token,
+        onedriveExpiresAt: expiresAt,
+      },
+    });
+
+    res.json({ message: 'OneDrive connected successfully' });
+  } catch (error) {
+    console.error('OneDrive connect error:', error);
+    res.status(500).json({ error: 'Failed to connect OneDrive', details: error.message });
+  }
+});
+
+// POST /auth/onedrive/disconnect - Remove OneDrive tokens
+app.post('/auth/onedrive/disconnect', authenticateToken, async (req, res) => {
+  try {
+    const db = getPrisma();
+
+    await db.user.update({
+      where: { id: req.user.userId },
+      data: {
+        onedriveAccessToken: null,
+        onedriveRefreshToken: null,
+        onedriveExpiresAt: null,
+      },
+    });
+
+    res.json({ message: 'OneDrive disconnected successfully' });
+  } catch (error) {
+    console.error('OneDrive disconnect error:', error);
+    res.status(500).json({ error: 'Failed to disconnect OneDrive', details: error.message });
+  }
+});
+
+// ============ PASSWORD RESET ROUTES ============
+
+// POST /auth/forgot-password - Send password reset email
+app.post('/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const db = getPrisma();
+    const user = await db.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    // Always return success to prevent email enumeration
+    if (!user) {
+      return res.json({ message: 'If an account exists, a reset email has been sent' });
+    }
+
+    // Generate reset token (valid for 1 hour)
+    const resetToken = jwt.sign(
+      { userId: user.id, purpose: 'password-reset' },
+      JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    // TODO: Send email with reset link
+    // For now, log it (in production, use a proper email service)
+    const resetUrl = `https://poolside.akoolai.com/reset-password?token=${resetToken}`;
+    console.log(`Password reset requested for ${email}. Reset URL: ${resetUrl}`);
+
+    // In production, you'd send an email here using nodemailer/resend/sendgrid
+    // await sendEmail({
+    //   to: email,
+    //   subject: 'Reset your Poolside Code password',
+    //   html: `Click here to reset: ${resetUrl}`
+    // });
+
+    res.json({ message: 'If an account exists, a reset email has been sent' });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+// POST /auth/reset-password - Reset password with token
+app.post('/auth/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword) {
+      return res.status(400).json({ error: 'Token and new password are required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    // Verify token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+      if (decoded.purpose !== 'password-reset') {
+        throw new Error('Invalid token purpose');
+      }
+    } catch (err) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    const db = getPrisma();
+    const user = await db.user.findUnique({
+      where: { id: decoded.userId },
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid reset token' });
+    }
+
+    const newPasswordHash = await bcrypt.hash(newPassword, 12);
+
+    await db.user.update({
+      where: { id: user.id },
+      data: { passwordHash: newPasswordHash },
+    });
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
 // POST /auth/change-password - Change password
 app.post('/auth/change-password', authenticateToken, async (req, res) => {
   try {
@@ -400,6 +611,67 @@ app.post('/auth/change-password', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Change password error:', error);
     res.status(500).json({ error: 'Failed to change password', details: error.message });
+  }
+});
+
+// POST /stripe/checkout - Create Stripe checkout session for new subscription
+app.post('/stripe/checkout', authenticateToken, async (req, res) => {
+  try {
+    const { priceId, returnUrl } = req.body;
+    const db = getPrisma();
+
+    if (!priceId) {
+      return res.status(400).json({ error: 'Price ID is required' });
+    }
+
+    const user = await db.user.findUnique({
+      where: { id: req.user.userId },
+      include: { subscription: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+    // Create or retrieve Stripe customer
+    let customerId = user.subscription?.stripeCustomerId;
+
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        name: user.name || undefined,
+        metadata: { userId: user.id },
+      });
+      customerId = customer.id;
+
+      // Save customer ID
+      await db.subscription.upsert({
+        where: { userId: user.id },
+        update: { stripeCustomerId: customerId },
+        create: {
+          userId: user.id,
+          tier: 'free',
+          status: 'active',
+          stripeCustomerId: customerId,
+        },
+      });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: returnUrl || 'https://poolside.akoolai.com/dashboard/subscription?success=true',
+      cancel_url: returnUrl || 'https://poolside.akoolai.com/dashboard/subscription?cancelled=true',
+      metadata: { userId: user.id },
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Stripe checkout error:', error);
+    res.status(500).json({ error: 'Failed to create checkout session', details: error.message });
   }
 });
 
