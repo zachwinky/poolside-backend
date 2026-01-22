@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import GoogleSignIn from "@/components/GoogleSignIn";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -27,6 +28,20 @@ export default function LoginPage() {
     }
   };
 
+  const handleGoogleSuccess = async (credential: string) => {
+    setError("");
+    setLoading(true);
+
+    try {
+      await api.loginWithGoogle(credential);
+      router.push("/dashboard");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md">
@@ -39,13 +54,31 @@ export default function LoginPage() {
           <p className="text-gray-400">Sign in to your account</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
-            <div className="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg text-sm">
-              {error}
-            </div>
-          )}
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg text-sm mb-4">
+            {error}
+          </div>
+        )}
 
+        {/* Google Sign In */}
+        <div className="mb-6">
+          <GoogleSignIn
+            onSuccess={handleGoogleSuccess}
+            onError={(err) => setError(err.message)}
+            text="signin_with"
+          />
+        </div>
+
+        <div className="relative mb-6">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-gray-800"></div>
+          </div>
+          <div className="relative flex justify-center text-sm">
+            <span className="px-4 bg-gray-950 text-gray-500">or continue with email</span>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="email" className="block text-sm font-medium mb-2">
               Email

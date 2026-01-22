@@ -135,6 +135,22 @@ class ApiClient {
     return data;
   }
 
+  async loginWithGoogle(credential: string): Promise<AuthResponse> {
+    const response = await fetch(`${API_BASE}/auth/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Google login failed');
+    }
+
+    this.setTokens(data.accessToken, data.refreshToken);
+    return data;
+  }
+
   async getMe(): Promise<User> {
     const response = await this.fetch('/auth/me');
     const data = await response.json();

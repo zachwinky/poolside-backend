@@ -218,6 +218,85 @@ app.post('/auth/refresh', async (req, res) => {
   }
 });
 
+// POST /auth/google - Google OAuth login/register
+app.post('/auth/google', async (req, res) => {
+  try {
+    const { credential } = req.body;
+
+    if (!credential) {
+      return res.status(400).json({ error: 'Google credential is required' });
+    }
+
+    // Verify the Google ID token
+    const { OAuth2Client } = require('google-auth-library');
+    const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+    const ticket = await client.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    const { email, name, sub: googleId } = payload;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email not provided by Google' });
+    }
+
+    const db = getPrisma();
+
+    // Check if user exists
+    let user = await db.user.findUnique({
+      where: { email: email.toLowerCase() },
+      include: { subscription: true },
+    });
+
+    if (!user) {
+      // Create new user
+      user = await db.user.create({
+        data: {
+          email: email.toLowerCase(),
+          name: name || null,
+          googleId,
+          subscription: {
+            create: {
+              tier: 'free',
+              status: 'active',
+            },
+          },
+        },
+        include: { subscription: true },
+      });
+    } else if (!user.googleId) {
+      // Link Google account to existing user
+      user = await db.user.update({
+        where: { id: user.id },
+        data: { googleId },
+        include: { subscription: true },
+      });
+    }
+
+    const tokenPayload = { userId: user.id, email: user.email, tier: user.subscription?.tier || 'free' };
+    const accessToken = generateAccessToken(tokenPayload);
+    const refreshToken = generateRefreshToken(tokenPayload);
+
+    res.json({
+      message: 'Login successful',
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        subscription: user.subscription,
+      },
+      accessToken,
+      refreshToken,
+    });
+  } catch (error) {
+    console.error('Google auth error:', error);
+    res.status(401).json({ error: 'Google authentication failed', details: error.message });
+  }
+});
+
 // GET /auth/me
 app.get('/auth/me', authenticateToken, async (req, res) => {
   try {

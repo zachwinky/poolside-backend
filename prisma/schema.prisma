@@ -12,10 +12,13 @@ datasource db {
 model User {
   id              String    @id @default(cuid())
   email           String    @unique
-  passwordHash    String
+  passwordHash    String?   // Optional for OAuth users
   name            String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+
+  // OAuth providers
+  googleId        String?   @unique
 
   // OneDrive tokens (encrypted)
   onedriveAccessToken   String?

@@ -118,6 +118,12 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
+    // Check if user has a password (not OAuth-only user)
+    if (!user.passwordHash) {
+      res.status(401).json({ error: 'Please sign in with Google' });
+      return;
+    }
+
     // Verify password
     const isValidPassword = await bcrypt.compare(password, user.passwordHash);
     if (!isValidPassword) {
@@ -339,6 +345,12 @@ router.post(
 
       if (!user) {
         res.status(404).json({ error: 'User not found' });
+        return;
+      }
+
+      // Check if user has a password set
+      if (!user.passwordHash) {
+        res.status(400).json({ error: 'Cannot change password for OAuth accounts' });
         return;
       }
 
