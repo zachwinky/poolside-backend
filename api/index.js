@@ -324,6 +324,7 @@ app.get('/auth/me', authenticateToken, async (req, res) => {
       subscription: user.subscription,
       hasOnedrive: !!user.onedriveAccessToken,
       hasPassword: !!user.passwordHash,
+      isAdmin: user.isAdmin,
     });
   } catch (error) {
     console.error('Get me error:', error);
@@ -351,6 +352,7 @@ app.patch('/auth/me', authenticateToken, async (req, res) => {
       subscription: user.subscription,
       hasOnedrive: !!user.onedriveAccessToken,
       hasPassword: !!user.passwordHash,
+      isAdmin: user.isAdmin,
     });
   } catch (error) {
     console.error('Update profile error:', error);
@@ -430,6 +432,163 @@ app.post('/stripe/portal', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Stripe portal error:', error);
     res.status(500).json({ error: 'Failed to create portal session', details: error.message });
+  }
+});
+
+// ============ ADMIN SETUP ============
+
+// POST /admin/setup - One-time setup to make initial admin (requires secret)
+app.post('/admin/setup', async (req, res) => {
+  try {
+    const { email, secret } = req.body;
+
+    // Use JWT_SECRET as the setup secret for security
+    if (secret !== process.env.JWT_SECRET) {
+      return res.status(403).json({ error: 'Invalid setup secret' });
+    }
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const db = getPrisma();
+
+    const user = await db.user.update({
+      where: { email: email.toLowerCase() },
+      data: { isAdmin: true },
+    });
+
+    res.json({
+      message: 'Admin access granted',
+      user: {
+        id: user.id,
+        email: user.email,
+        isAdmin: user.isAdmin,
+      },
+    });
+  } catch (error) {
+    console.error('Admin setup error:', error);
+    res.status(500).json({ error: 'Failed to setup admin', details: error.message });
+  }
+});
+
+// ============ ADMIN ROUTES ============
+
+// Middleware to check if user is admin
+function requireAdmin(req, res, next) {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  const db = getPrisma();
+  db.user.findUnique({
+    where: { id: req.user.userId },
+  }).then(user => {
+    if (!user || !user.isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    next();
+  }).catch(error => {
+    console.error('Admin check error:', error);
+    res.status(500).json({ error: 'Failed to verify admin status' });
+  });
+}
+
+// GET /admin/users - List all users (admin only)
+app.get('/admin/users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const db = getPrisma();
+
+    const users = await db.user.findMany({
+      include: { subscription: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({
+      users: users.map(user => ({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        createdAt: user.createdAt,
+        isAdmin: user.isAdmin,
+        subscription: user.subscription,
+      })),
+    });
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'Failed to get users', details: error.message });
+  }
+});
+
+// PATCH /admin/users/:userId - Update user (admin only)
+app.patch('/admin/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { isAdmin } = req.body;
+    const db = getPrisma();
+
+    const user = await db.user.update({
+      where: { id: userId },
+      data: { isAdmin: !!isAdmin },
+      include: { subscription: true },
+    });
+
+    res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        createdAt: user.createdAt,
+        isAdmin: user.isAdmin,
+        subscription: user.subscription,
+      },
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ error: 'Failed to update user', details: error.message });
+  }
+});
+
+// PATCH /admin/users/:userId/subscription - Update user subscription (admin only)
+app.patch('/admin/users/:userId/subscription', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { tier } = req.body;
+    const db = getPrisma();
+
+    if (!['free', 'pro', 'unlimited'].includes(tier)) {
+      return res.status(400).json({ error: 'Invalid tier. Must be free, pro, or unlimited' });
+    }
+
+    // Update or create subscription
+    await db.subscription.upsert({
+      where: { userId },
+      update: { tier },
+      create: {
+        userId,
+        tier,
+        status: 'active',
+      },
+    });
+
+    const user = await db.user.findUnique({
+      where: { id: userId },
+      include: { subscription: true },
+    });
+
+    res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        createdAt: user.createdAt,
+        isAdmin: user.isAdmin,
+        subscription: user.subscription,
+      },
+    });
+  } catch (error) {
+    console.error('Update subscription error:', error);
+    res.status(500).json({ error: 'Failed to update subscription', details: error.message });
   }
 });
 

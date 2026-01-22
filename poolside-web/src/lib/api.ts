@@ -8,6 +8,16 @@ export interface User {
   subscription: Subscription | null;
   hasOnedrive: boolean;
   hasPassword: boolean;
+  isAdmin: boolean;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string | null;
+  createdAt: string;
+  isAdmin: boolean;
+  subscription: Subscription | null;
 }
 
 export interface Subscription {
@@ -194,6 +204,40 @@ class ApiClient {
       throw new Error(data.error || 'Failed to get portal URL');
     }
     return data.url;
+  }
+
+  // Admin endpoints
+  async getUsers(): Promise<AdminUser[]> {
+    const response = await this.fetch('/admin/users');
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to get users');
+    }
+    return data.users;
+  }
+
+  async updateUserAdmin(userId: string, isAdmin: boolean): Promise<AdminUser> {
+    const response = await this.fetch(`/admin/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isAdmin }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to update user');
+    }
+    return data.user;
+  }
+
+  async updateUserSubscription(userId: string, tier: string): Promise<AdminUser> {
+    const response = await this.fetch(`/admin/users/${userId}/subscription`, {
+      method: 'PATCH',
+      body: JSON.stringify({ tier }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to update subscription');
+    }
+    return data.user;
   }
 
   logout() {
