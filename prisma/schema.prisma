@@ -20,7 +20,13 @@ model User {
   // OAuth providers
   googleId        String?   @unique
 
-  // OneDrive tokens (encrypted)
+  // GitHub OAuth (primary storage)
+  githubAccessToken     String?
+  githubRefreshToken    String?
+  githubUsername        String?
+  githubConnectedAt     DateTime?
+
+  // OneDrive tokens (optional/secondary storage)
   onedriveAccessToken   String?
   onedriveRefreshToken  String?
   onedriveExpiresAt     DateTime?

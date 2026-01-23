@@ -229,6 +229,8 @@ router.get('/me', authenticateToken, async (req: AuthenticatedRequest, res: Resp
         isAdmin: user.isAdmin,
         createdAt: user.createdAt,
         hasOneDrive: !!user.onedriveAccessToken,
+        hasGithub: !!user.githubAccessToken,
+        githubUsername: user.githubUsername,
         subscription: {
           tier: user.subscription?.tier || 'free',
           status: user.subscription?.status || 'active',
@@ -376,5 +378,129 @@ router.post(
     }
   }
 );
+
+// ============= GitHub OAuth Routes =============
+
+// POST /auth/github/url - Get GitHub OAuth URL
+router.post('/github/url', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { redirectUri } = req.body;
+
+    const clientId = process.env.GITHUB_CLIENT_ID;
+    if (!clientId) {
+      res.status(500).json({ error: 'GitHub OAuth not configured. Add GITHUB_CLIENT_ID to .env' });
+      return;
+    }
+
+    const state = Buffer.from(JSON.stringify({
+      userId: req.user!.userId,
+      timestamp: Date.now(),
+    })).toString('base64');
+
+    const scopes = ['repo', 'read:user', 'user:email'].join(' ');
+
+    const url = `https://github.com/login/oauth/authorize?` +
+      `client_id=${clientId}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent(scopes)}` +
+      `&state=${state}`;
+
+    res.json({ url });
+  } catch (error) {
+    console.error('GitHub URL error:', error);
+    res.status(500).json({ error: 'Failed to generate GitHub auth URL' });
+  }
+});
+
+// POST /auth/github/connect - Exchange code for token and connect GitHub
+router.post('/github/connect', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { code } = req.body;
+
+    if (!code) {
+      res.status(400).json({ error: 'Authorization code required' });
+      return;
+    }
+
+    const clientId = process.env.GITHUB_CLIENT_ID;
+    const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      res.status(500).json({ error: 'GitHub OAuth not configured. Add GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to .env' });
+      return;
+    }
+
+    // Exchange code for access token
+    const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+      }),
+    });
+
+    const tokenData = await tokenResponse.json() as { access_token?: string; error?: string; error_description?: string };
+
+    if (tokenData.error || !tokenData.access_token) {
+      res.status(400).json({ error: tokenData.error_description || 'Failed to get GitHub access token' });
+      return;
+    }
+
+    // Get GitHub user info
+    const userResponse = await fetch('https://api.github.com/user', {
+      headers: {
+        'Authorization': `Bearer ${tokenData.access_token}`,
+        'Accept': 'application/vnd.github+json',
+      },
+    });
+
+    const userData = await userResponse.json() as { login: string; id: number };
+
+    if (!userData.login) {
+      res.status(400).json({ error: 'Failed to get GitHub user info' });
+      return;
+    }
+
+    // Store GitHub tokens in database
+    await prisma.user.update({
+      where: { id: req.user!.userId },
+      data: {
+        githubAccessToken: tokenData.access_token,
+        githubUsername: userData.login,
+        githubConnectedAt: new Date(),
+      },
+    });
+
+    res.json({ username: userData.login });
+  } catch (error) {
+    console.error('GitHub connect error:', error);
+    res.status(500).json({ error: 'Failed to connect GitHub account' });
+  }
+});
+
+// POST /auth/github/disconnect - Remove GitHub connection
+router.post('/github/disconnect', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    await prisma.user.update({
+      where: { id: req.user!.userId },
+      data: {
+        githubAccessToken: null,
+        githubRefreshToken: null,
+        githubUsername: null,
+        githubConnectedAt: null,
+      },
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('GitHub disconnect error:', error);
+    res.status(500).json({ error: 'Failed to disconnect GitHub' });
+  }
+});
 
 export default router;

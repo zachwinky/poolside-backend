@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import type { Tool, ToolUseBlock, TextBlock, ContentBlock, MessageParam, ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages';
 
 // Model constants
 export const MODELS = {
@@ -28,7 +29,7 @@ const defaultClient = createClient();
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
-  content: string;
+  content: string | ContentBlock[];
 }
 
 export interface FileChange {
@@ -37,9 +38,23 @@ export interface FileChange {
   content?: string;
 }
 
+export interface ToolCall {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  toolCallId: string;
+  result: string;
+  isError?: boolean;
+}
+
 export interface ChatResponse {
   content: string;
   fileChanges: FileChange[];
+  toolCalls?: ToolCall[];
+  stopReason?: string;
 }
 
 export interface ChatOptions {
@@ -47,14 +62,72 @@ export interface ChatOptions {
   apiKey?: string; // For BYOK users
 }
 
-const SYSTEM_PROMPT = `You are an AI coding assistant integrated into "Poolside Code", a mobile app that lets users edit code through conversation. You help users modify their code projects stored in OneDrive.
+export interface ChatWithToolsOptions extends ChatOptions {
+  enableTools?: boolean;
+  toolResults?: ToolResult[];
+}
+
+// Tool definitions for file reading
+export const FILE_TOOLS: Tool[] = [
+  {
+    name: 'read_file',
+    description: 'Read the contents of a file from the project. Use this to examine code, configuration files, or any text file in the project. ALWAYS use this tool when you need to see file contents before making changes.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The relative path to the file within the project (e.g., "src/components/App.tsx")',
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'read_multiple_files',
+    description: 'Read the contents of multiple files at once. More efficient than reading files one by one.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of relative file paths to read',
+        },
+      },
+      required: ['paths'],
+    },
+  },
+  {
+    name: 'search_files',
+    description: 'Search for files in the project that match a pattern or contain specific text in their name.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Search query - can be a filename pattern (e.g., "*.tsx") or text to search for in file names',
+        },
+      },
+      required: ['query'],
+    },
+  },
+];
+
+const SYSTEM_PROMPT = `You are an AI coding assistant integrated into "Poolside Code", a mobile app that lets users edit code through conversation. You help users modify their code projects stored in OneDrive or GitHub.
 
 IMPORTANT GUIDELINES:
-1. When the user asks you to make changes to code, respond with BOTH:
+
+1. FILE READING: You have tools to read files from the project. When the user asks about code or wants changes:
+   - Use read_file or read_multiple_files to examine the actual file contents BEFORE making changes
+   - Use search_files to find files when you're not sure of the exact path
+   - ALWAYS read a file before modifying it - never guess at its contents
+
+2. When the user asks you to make changes to code, respond with BOTH:
    - A natural language explanation of what you're doing
    - The actual file changes in a structured format
 
-2. For file changes, use this exact format at the end of your response:
+3. For file changes, use this exact format at the end of your response:
    ---FILE_CHANGES_START---
    {"changes": [
      {"path": "relative/path/to/file.ts", "action": "modify", "content": "full file content here"},
@@ -62,11 +135,9 @@ IMPORTANT GUIDELINES:
    ]}
    ---FILE_CHANGES_END---
 
-3. Always provide the COMPLETE file content, not just the changed parts.
+4. Always provide the COMPLETE file content, not just the changed parts.
 
-4. Keep explanations concise since users are on mobile devices.
-
-5. If you need more information about the project structure or specific files, ask the user or request to see the relevant files.
+5. Keep explanations concise since users are on mobile devices.
 
 6. Respect the project context - follow the coding conventions and patterns mentioned.
 
@@ -169,6 +240,178 @@ function parseFileChanges(content: string): FileChange[] {
     console.error('Failed to parse file changes:', error);
     return [];
   }
+}
+
+// Extract text content from response
+function extractTextContent(content: ContentBlock[]): string {
+  return content
+    .filter((block): block is TextBlock => block.type === 'text')
+    .map((block) => block.text)
+    .join('');
+}
+
+// Extract tool calls from response
+function extractToolCalls(content: ContentBlock[]): ToolCall[] {
+  return content
+    .filter((block): block is ToolUseBlock => block.type === 'tool_use')
+    .map((block) => ({
+      id: block.id,
+      name: block.name,
+      input: block.input as Record<string, unknown>,
+    }));
+}
+
+// Chat with tools support - handles the agentic loop
+export async function chatWithTools(
+  messages: MessageParam[],
+  projectContext: string,
+  options: ChatWithToolsOptions = {}
+): Promise<ChatResponse> {
+  const { model = 'sonnet', apiKey, enableTools = true, toolResults } = options;
+  const client = apiKey ? createClient(apiKey) : defaultClient;
+  const modelId = MODEL_MAP[model];
+
+  const systemMessage = `${SYSTEM_PROMPT}\n\n---PROJECT CONTEXT---\n${projectContext}\n---END CONTEXT---`;
+
+  // Build the messages array
+  let apiMessages: MessageParam[] = [...messages];
+
+  // If we have tool results, we need to add them as a user message
+  if (toolResults && toolResults.length > 0) {
+    const toolResultContent: ToolResultBlockParam[] = toolResults.map((tr) => ({
+      type: 'tool_result' as const,
+      tool_use_id: tr.toolCallId,
+      content: tr.result,
+      is_error: tr.isError,
+    }));
+
+    apiMessages.push({
+      role: 'user',
+      content: toolResultContent,
+    });
+  }
+
+  const response = await client.messages.create({
+    model: modelId,
+    max_tokens: 4096,
+    system: systemMessage,
+    messages: apiMessages,
+    tools: enableTools ? FILE_TOOLS : undefined,
+  });
+
+  const textContent = extractTextContent(response.content);
+  const toolCalls = extractToolCalls(response.content);
+
+  const fileChanges = parseFileChanges(textContent);
+  const cleanedContent = textContent
+    .replace(/---FILE_CHANGES_START---[\s\S]*?---FILE_CHANGES_END---/g, '')
+    .trim();
+
+  return {
+    content: cleanedContent,
+    fileChanges,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    stopReason: response.stop_reason || undefined,
+  };
+}
+
+// Streaming chat with tools support
+export async function streamChatWithTools(
+  messages: MessageParam[],
+  projectContext: string,
+  onChunk: (chunk: string) => void,
+  onToolUse: (toolCalls: ToolCall[]) => void,
+  options: ChatWithToolsOptions = {}
+): Promise<ChatResponse> {
+  const { model = 'sonnet', apiKey, enableTools = true, toolResults } = options;
+  const client = apiKey ? createClient(apiKey) : defaultClient;
+  const modelId = MODEL_MAP[model];
+
+  const systemMessage = `${SYSTEM_PROMPT}\n\n---PROJECT CONTEXT---\n${projectContext}\n---END CONTEXT---`;
+
+  // Build the messages array
+  let apiMessages: MessageParam[] = [...messages];
+
+  // If we have tool results, add them
+  if (toolResults && toolResults.length > 0) {
+    const toolResultContent: ToolResultBlockParam[] = toolResults.map((tr) => ({
+      type: 'tool_result' as const,
+      tool_use_id: tr.toolCallId,
+      content: tr.result,
+      is_error: tr.isError,
+    }));
+
+    apiMessages.push({
+      role: 'user',
+      content: toolResultContent,
+    });
+  }
+
+  let fullResponse = '';
+  const toolCalls: ToolCall[] = [];
+  let currentToolUse: Partial<ToolUseBlock> | null = null;
+  let toolInputJson = '';
+
+  const stream = await client.messages.stream({
+    model: modelId,
+    max_tokens: 4096,
+    system: systemMessage,
+    messages: apiMessages,
+    tools: enableTools ? FILE_TOOLS : undefined,
+  });
+
+  for await (const event of stream) {
+    if (event.type === 'content_block_start') {
+      if (event.content_block.type === 'tool_use') {
+        currentToolUse = {
+          type: 'tool_use',
+          id: event.content_block.id,
+          name: event.content_block.name,
+        };
+        toolInputJson = '';
+      }
+    } else if (event.type === 'content_block_delta') {
+      if (event.delta.type === 'text_delta') {
+        const text = event.delta.text;
+        fullResponse += text;
+        onChunk(text);
+      } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
+        toolInputJson += event.delta.partial_json;
+      }
+    } else if (event.type === 'content_block_stop' && currentToolUse) {
+      try {
+        const input = JSON.parse(toolInputJson || '{}');
+        toolCalls.push({
+          id: currentToolUse.id!,
+          name: currentToolUse.name!,
+          input,
+        });
+      } catch (e) {
+        console.error('Failed to parse tool input:', e);
+      }
+      currentToolUse = null;
+      toolInputJson = '';
+    }
+  }
+
+  // Notify about tool calls if any
+  if (toolCalls.length > 0) {
+    onToolUse(toolCalls);
+  }
+
+  const fileChanges = parseFileChanges(fullResponse);
+  const cleanedContent = fullResponse
+    .replace(/---FILE_CHANGES_START---[\s\S]*?---FILE_CHANGES_END---/g, '')
+    .trim();
+
+  const finalMessage = await stream.finalMessage();
+
+  return {
+    content: cleanedContent,
+    fileChanges,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    stopReason: finalMessage.stop_reason || undefined,
+  };
 }
 
 export async function analyzeProject(

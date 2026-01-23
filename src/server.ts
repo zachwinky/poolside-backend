@@ -8,6 +8,7 @@ dotenv.config();
 import chatRoutes from './routes/chat';
 import storageRoutes from './routes/storage';
 import authRoutes from './routes/auth';
+import githubRoutes from './routes/github';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,6 +24,12 @@ app.use(
 // Parse JSON bodies
 app.use(express.json({ limit: '10mb' }));
 
+// Request logging middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
+
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
   res.json({
@@ -35,6 +42,7 @@ app.get('/health', (req: Request, res: Response) => {
 // API routes
 app.use('/api/chat', chatRoutes);
 app.use('/api/storage', storageRoutes);
+app.use('/api/github', githubRoutes);
 app.use('/auth', authRoutes);
 
 // OAuth callback endpoint for OneDrive
