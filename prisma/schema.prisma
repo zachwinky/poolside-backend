@@ -19,6 +19,7 @@ model User {
 
   // OAuth providers
   googleId        String?   @unique
+  appleId         String?   @unique
 
   // GitHub OAuth (primary storage)
   githubAccessToken     String?

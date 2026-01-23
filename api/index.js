@@ -302,6 +302,100 @@ app.post('/auth/google', async (req, res) => {
   }
 });
 
+// POST /auth/apple - Apple Sign In login/register
+app.post('/auth/apple', async (req, res) => {
+  try {
+    const { identityToken, email, fullName } = req.body;
+
+    if (!identityToken) {
+      return res.status(400).json({ error: 'Apple identity token is required' });
+    }
+
+    // Decode and verify the Apple identity token
+    // Apple tokens are JWTs signed by Apple's public key
+    const decodedToken = jwt.decode(identityToken, { complete: true });
+
+    if (!decodedToken || !decodedToken.payload) {
+      return res.status(400).json({ error: 'Invalid Apple identity token' });
+    }
+
+    const { sub: appleId, email: tokenEmail } = decodedToken.payload;
+
+    // Use email from token or request (Apple only sends email on first sign-in)
+    const userEmail = tokenEmail || email;
+
+    if (!appleId) {
+      return res.status(400).json({ error: 'Apple user ID not found in token' });
+    }
+
+    const db = getPrisma();
+
+    // First, try to find user by Apple ID
+    let user = await db.user.findFirst({
+      where: { appleId },
+      include: { subscription: true },
+    });
+
+    if (!user && userEmail) {
+      // Check if user exists with this email
+      user = await db.user.findUnique({
+        where: { email: userEmail.toLowerCase() },
+        include: { subscription: true },
+      });
+
+      if (user) {
+        // Link Apple account to existing user
+        user = await db.user.update({
+          where: { id: user.id },
+          data: { appleId },
+          include: { subscription: true },
+        });
+      }
+    }
+
+    if (!user) {
+      // Create new user
+      const userName = fullName
+        ? [fullName.givenName, fullName.familyName].filter(Boolean).join(' ')
+        : null;
+
+      user = await db.user.create({
+        data: {
+          email: userEmail ? userEmail.toLowerCase() : `apple_${appleId}@private.appleid.com`,
+          name: userName,
+          appleId,
+          subscription: {
+            create: {
+              tier: 'free',
+              status: 'active',
+            },
+          },
+        },
+        include: { subscription: true },
+      });
+    }
+
+    const tokenPayload = { userId: user.id, email: user.email, tier: user.subscription?.tier || 'free' };
+    const accessToken = generateAccessToken(tokenPayload);
+    const refreshToken = generateRefreshToken(tokenPayload);
+
+    res.json({
+      message: 'Login successful',
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        subscription: user.subscription,
+      },
+      accessToken,
+      refreshToken,
+    });
+  } catch (error) {
+    console.error('Apple auth error:', error);
+    res.status(401).json({ error: 'Apple authentication failed', details: error.message });
+  }
+});
+
 // GET /auth/me
 app.get('/auth/me', authenticateToken, async (req, res) => {
   try {
